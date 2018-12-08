@@ -82,9 +82,9 @@ lua_State *script_create(char *file, char *url, char **headers) {
     lua_getfield(L, 4, "headers");
     for (char **h = headers; *h; h++) {
         char *p = strchr(*h, ':');
-        if (p && p[1] == ' ') {
+        if (p && p[1] != '\0') {
             lua_pushlstring(L, *h, p - *h);
-            lua_pushstring(L, p + 2);
+            lua_pushstring(L, p + 1);
             lua_settable(L, 5);
         }
     }
