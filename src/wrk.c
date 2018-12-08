@@ -165,11 +165,6 @@ int main(int argc, char **argv) {
     long double req_per_s   = complete   / runtime_s;
     long double bytes_per_s = bytes      / runtime_s;
 
-    if (complete / cfg.connections > 0) {
-        int64_t interval = runtime_us / (complete / cfg.connections);
-        stats_correct(statistics.latency, interval);
-    }
-
     print_stats_header();
     print_stats("Latency", statistics.latency, format_time_us);
     print_stats("Req/Sec", statistics.requests, format_metric);
