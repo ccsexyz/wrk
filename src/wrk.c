@@ -143,7 +143,11 @@ int main(int argc, char **argv) {
     uint64_t bytes    = 0;
     errors errors     = { 0 };
 
-    sleep(cfg.duration);
+    // sleep may be intruppted by other signal
+    unsigned int duration = cfg.duration;
+    while (duration > 0 && stop == 0) {
+        duration = sleep(duration);
+    }
     stop = 1;
 
     for (uint64_t i = 0; i < cfg.threads; i++) {
