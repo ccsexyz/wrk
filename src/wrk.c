@@ -6,6 +6,7 @@
 
 static struct config {
     uint64_t connections;
+    uint64_t rate;
     uint64_t duration;
     uint64_t threads;
     uint64_t timeout;
@@ -42,19 +43,20 @@ static void handler(int sig) {
 }
 
 static void usage() {
-    printf("Usage: wrk <options> <url>                            \n"
-           "  Options:                                            \n"
-           "    -c, --connections <N>  Connections to keep open   \n"
-           "    -d, --duration    <T>  Duration of test           \n"
-           "    -t, --threads     <N>  Number of threads to use   \n"
-           "                                                      \n"
-           "    -s, --script      <S>  Load Lua script file       \n"
-           "    -H, --header      <H>  Add header to request      \n"
-           "        --latency          Print latency statistics   \n"
-           "        --timeout     <T>  Socket/request timeout     \n"
-           "    -v, --version          Print version details      \n"
-           "                                                      \n"
-           "  Numeric arguments may include a SI unit (1k, 1M, 1G)\n"
+    printf("Usage: wrk <options> <url>                                  \n"
+           "  Options:                                                  \n"
+           "    -c, --connections <N>  Connections to keep open         \n"
+           "    -d, --duration    <T>  Duration of test                 \n"
+           "    -t, --threads     <N>  Number of threads to use         \n"
+           "    -r, --rate        <N>  Rate Limit, in seconds (QPS).    \n"
+           "                                                            \n"
+           "    -s, --script      <S>  Load Lua script file             \n"
+           "    -H, --header      <H>  Add header to request            \n"
+           "        --latency          Print latency statistics         \n"
+           "        --timeout     <T>  Socket/request timeout           \n"
+           "    -v, --version          Print version details            \n"
+           "                                                            \n"
+           "  Numeric arguments may include a SI unit (1k, 1M, 1G)      \n"
            "  Time arguments may include a time unit (2s, 2m, 2h)\n");
 }
 
@@ -105,6 +107,7 @@ int main(int argc, char **argv) {
         thread *t      = &threads[i];
         t->loop        = aeCreateEventLoop(10 + cfg.connections * 3);
         t->connections = cfg.connections / cfg.threads;
+        t->rate        = cfg.rate / cfg.threads;
 
         t->L = script_create(cfg.script, url, headers);
         script_init(L, t, argc - optind, &argv[optind]);
@@ -136,7 +139,10 @@ int main(int argc, char **argv) {
 
     char *time = format_time_s(cfg.duration);
     printf("Running %s test @ %s\n", time, url);
-    printf("  %"PRIu64" threads and %"PRIu64" connections\n", cfg.threads, cfg.connections);
+    printf("  %"PRIu64" threads and %"PRIu64" connections", cfg.threads, cfg.connections);
+    if (cfg.rate)
+        printf(" %"PRIu64" requests per second", cfg.rate);
+    printf("\n");
 
     uint64_t start    = time_us();
     uint64_t complete = 0;
@@ -224,6 +230,7 @@ void *thread_main(void *arg) {
     aeCreateTimeEvent(loop, RECORD_INTERVAL_MS, record_rate, thread, NULL);
 
     thread->start = time_us();
+    thread->thread_start = thread->start;
     aeMain(loop);
 
     aeDeleteEventLoop(loop);
@@ -328,6 +335,7 @@ static int response_complete(http_parser *parser) {
 
     thread->complete++;
     thread->requests++;
+    thread->total_requests++;
 
     if (status > 399) {
         thread->errors.status++;
@@ -380,12 +388,32 @@ static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
     reconnect_socket(c->thread, c);
 }
 
+static uint64_t thread_delay(thread *thread) {
+    if (thread->rate == 0) {
+        return 0;
+    }
+
+    uint64_t elapsed_ms = (time_us() - thread->thread_start) / 1000;
+    if (thread->rate * elapsed_ms / 1000 < thread->total_requests) {
+        return RECORD_INTERVAL_MS;
+    } else {
+        return 0;
+    }
+}
+
 static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
     thread *thread = c->thread;
 
+    uint64_t delay = 0;
+
     if (c->delayed) {
-        uint64_t delay = script_delay(thread->L);
+        delay = script_delay(thread->L);
+    } else {
+        delay = thread_delay(thread);
+    }
+
+    if (delay > 0) {
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
         aeCreateTimeEvent(loop, delay, delay_request, c, NULL);
         return;
@@ -469,6 +497,7 @@ static struct option longopts[] = {
     { "connections", required_argument, NULL, 'c' },
     { "duration",    required_argument, NULL, 'd' },
     { "threads",     required_argument, NULL, 't' },
+    { "rate",        required_argument, NULL, 'r' },
     { "script",      required_argument, NULL, 's' },
     { "header",      required_argument, NULL, 'H' },
     { "latency",     no_argument,       NULL, 'L' },
@@ -487,14 +516,18 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->connections = 10;
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
+    cfg->rate        = 0;
 
-    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:Lrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:r:d:s:H:T:Lrv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
                 break;
             case 'c':
                 if (scan_metric(optarg, &cfg->connections)) return -1;
+                break;
+            case 'r':
+                if (scan_metric(optarg, &cfg->rate)) return -1;
                 break;
             case 'd':
                 if (scan_time(optarg, &cfg->duration)) return -1;
@@ -533,6 +566,11 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
 
     if (!cfg->connections || cfg->connections < cfg->threads) {
         fprintf(stderr, "number of connections must be >= threads\n");
+        return -1;
+    }
+
+    if (cfg->rate > 0 && cfg->rate < cfg->connections) {
+        fprintf(stderr, "rate must be >= connections\n");
         return -1;
     }
 

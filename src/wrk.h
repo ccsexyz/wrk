@@ -31,8 +31,11 @@ typedef struct {
     uint64_t connections;
     uint64_t complete;
     uint64_t requests;
+    uint64_t total_requests;
     uint64_t bytes;
     uint64_t start;
+    uint64_t thread_start;
+    uint64_t rate;
     lua_State *L;
     errors errors;
     struct connection *cs;
