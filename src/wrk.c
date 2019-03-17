@@ -577,7 +577,16 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
 
     if (optind == argc || !cfg->threads || !cfg->duration) return -1;
 
-    if (!script_parse_url(argv[optind], parts)) {
+    *url    = argv[optind];
+    
+    if (strncmp(*url, "http", strlen("http"))) {
+        size_t new_url_len = strlen(*url) + strlen("http://") + 1;
+        char *new_url = zmalloc(new_url_len);
+        snprintf(new_url, new_url_len, "http://%s", *url);
+        *url = new_url;
+    }
+
+    if (!script_parse_url(*url, parts)) {
         fprintf(stderr, "invalid URL: %s\n", argv[optind]);
         return -1;
     }
@@ -592,7 +601,6 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
         return -1;
     }
 
-    *url    = argv[optind];
     *header = NULL;
 
     return 0;
